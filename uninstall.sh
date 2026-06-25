@@ -14,7 +14,7 @@ import json, os, sys
 settings_path, notify, restore = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(settings_path) as f:
     data = json.load(f)
-for event in ("Stop", "Notification"):
+for event in ("Stop", "Notification", "PreToolUse"):
     arr = data.get("hooks", {}).get(event)
     if not arr:
         continue

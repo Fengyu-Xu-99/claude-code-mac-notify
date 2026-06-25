@@ -11,6 +11,12 @@ SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOKS_DIR="$HOME/.claude/hooks"
 SETTINGS="$HOME/.claude/settings.json"
 
+# Optional: --tool-alerts also fires a (soft) alert before every Edit/Write/Bash.
+# This is the only way to be alerted on permission prompts while you're looking at
+# the session, but it's NOISY: it fires on routine tool use too, not just prompts.
+TOOL_ALERTS="no"
+[ "${1:-}" = "--tool-alerts" ] && TOOL_ALERTS="yes"
+
 echo "==> Checking dependencies"
 need_brew() {
   command -v brew >/dev/null 2>&1 || {
@@ -26,9 +32,9 @@ chmod +x "$HOOKS_DIR/notify.sh"
 
 echo "==> Wiring hooks into $SETTINGS"
 mkdir -p "$(dirname "$SETTINGS")"
-python3 - "$SETTINGS" "$HOOKS_DIR/notify.sh" <<'PY'
+python3 - "$SETTINGS" "$HOOKS_DIR/notify.sh" "$TOOL_ALERTS" <<'PY'
 import json, os, sys
-settings_path, notify = sys.argv[1], sys.argv[2]
+settings_path, notify, tool_alerts = sys.argv[1], sys.argv[2], sys.argv[3]
 data = {}
 if os.path.exists(settings_path):
     with open(settings_path) as f:
@@ -41,23 +47,38 @@ if os.path.exists(settings_path):
 
 hooks = data.setdefault("hooks", {})
 
-def install(event, arg):
+def install(event, arg, matcher=None):
     cmd = f'"{notify}" {arg}'
     arr = hooks.setdefault(event, [])
-    # idempotent: drop any prior group that already calls our notify.sh
+    # idempotent: drop any prior group that runs THIS exact notify.sh command, so
+    # re-running is safe and multiple notify.sh hooks can coexist on one event
+    # (e.g. PreToolUse carries both the 'question' and 'tool' hooks).
     arr[:] = [g for g in arr
-              if not any(notify in h.get("command", "") for h in g.get("hooks", []))]
-    arr.append({"hooks": [{"type": "command", "command": cmd, "async": True}]})
+              if not any(h.get("command", "") == cmd for h in g.get("hooks", []))]
+    group = {"hooks": [{"type": "command", "command": cmd, "async": True}]}
+    if matcher:
+        group = {"matcher": matcher, **group}
+    arr.append(group)
 
 install("Stop", "stop")
 install("Notification", "notification")
+# Fire when Claude is about to ask a question or present a plan. This is the
+# reliable "Claude needs your answer" alert; the Notification event above only
+# surfaces when you're away from the session.
+install("PreToolUse", "question", "AskUserQuestion|ExitPlanMode")
+
+# Opt-in: alert before every Edit/Write/Bash (catches permission prompts while you
+# watch, at the cost of firing on routine tool use too). Off unless --tool-alerts.
+if tool_alerts == "yes":
+    install("PreToolUse", "tool", "Edit|Write|MultiEdit|NotebookEdit|Bash")
 
 # Silence Claude Code's built-in generic notifier so it doesn't double up.
 data["preferredNotifChannel"] = "notifications_disabled"
 
 with open(settings_path, "w") as f:
     json.dump(data, f, indent=2)
-print("   updated (Stop, Notification, preferredNotifChannel)")
+extra = ", PreToolUse:tool" if tool_alerts == "yes" else ""
+print(f"   updated (Stop, Notification, PreToolUse:question{extra}, preferredNotifChannel)")
 PY
 
 echo "==> Firing a test banner"
@@ -70,14 +91,20 @@ Almost done. Two things macOS will NOT let a script change, do these once by han
   System Settings -> Notifications -> terminal-notifier
     1. Allow notifications: ON
     2. Alert style: Banners (auto-hide) or Alerts (stay until dismissed)
-    3. Summarize notifications: OFF   (otherwise it goes to the sidebar)
-
-  Also make sure a Focus / Do Not Disturb mode isn't filtering it. (notify.sh
-  passes -ignoreDnD, which handles most cases, but a strict Focus can still block.)
 
 Then fully quit and reopen Claude Code so it reloads the new config.
 
-You're set: you'll get an on-screen banner + sound when Claude finishes, needs
-permission, or is waiting on your input. Edit ~/.claude/hooks/notify.sh to change
-the wording or sounds. Run ./uninstall.sh to remove it.
+If banners only show in the Notification Center sidebar instead of popping on
+screen, the macOS notification daemon is in a stuck state. Reset it with:
+
+  killall NotificationCenter usernoted
+
+You're set: you'll get a sound + banner when Claude finishes, asks you a
+question, needs permission, or is waiting on your input. Edit
+~/.claude/hooks/notify.sh to change the wording or sounds. Run ./uninstall.sh
+to remove it.
+
+Want an alert on permission prompts even while you're watching the session?
+Re-run with  ./install.sh --tool-alerts  to also fire a soft sound before every
+Edit/Write/Bash. Heads up: it fires on routine tool use too, not just prompts.
 EOF
