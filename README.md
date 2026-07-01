@@ -111,6 +111,85 @@ The "click to focus" target is auto-detected from your terminal (`iTerm.app`, `A
 ./uninstall.sh --restore-builtin  # also re-enables Claude Code's built-in notifier
 ```
 
+## Optional: menu bar dashboard
+
+When you run several Claude Code sessions at once (different projects, or several
+Claudes in parallel), the banners tell you *something* happened but not the whole
+picture. The menu bar app shows every session and its status at a glance, so you
+can see which one needs you.
+
+```sh
+./install-menu.sh
+```
+
+Look for the **⌁** icon in the menu bar. The title summarizes what needs
+attention, e.g. `⌁ 🟢2 🟡1` (two working, one waiting on you). Click it for the
+full list. Each row is one session: a colored dot, the project, and how long
+since its last event. A legend at the bottom decodes the colors.
+
+| Dot | Meaning | Behavior |
+|-----|---------|----------|
+| 🟡 | **needs you** | asked a question, or a permission prompt is up. Floats to the top. |
+| 🔵 | **finished** | the turn ended and you haven't reviewed it. **Sticky**: stays until you act, so you can't miss it. Click **✓** to clear. |
+| 🟢 | **working** | actively running. Stays green through long thinking, not just tool calls. |
+| ⚪️ | **idle** | quiet for a while. Click **✕** to take it off the list. |
+
+Other things it does:
+
+- **🔊 Mute sounds** toggle (near Refresh/Quit) silences `notify.sh`'s sounds
+  without touching the banners. See [How the mute toggle
+  works](#how-the-mute-toggle-works) below.
+
+Hover a row to see its full session name and folder in the tooltip.
+
+It installs alongside `notify.sh` and never touches its hooks. Uninstall just the
+menu app (leaving banners/sounds intact):
+
+```sh
+./uninstall-menu.sh
+```
+
+### How it works
+
+`notify.sh` handles sounds and banners; the menu app is a separate track. Both
+run as hooks on the same Claude Code events, independently:
+
+- **`menubar.sh`** (a hook, like `notify.sh`) writes one small JSON file per
+  session to `~/.claude/menubar/` on each event. It plays no sound and shows no
+  banner.
+- **`ClaudeWatchMenu`** (a tiny native Swift app, auto-started by a LaunchAgent)
+  reads that folder every few seconds and draws the menu.
+
+Status is event-driven, so it's exactly as fresh as the last hook that fired. The
+hooks it wires:
+
+| Event | Hook | Sets |
+|-------|------|------|
+| Finished a turn | `Stop` | 🔵 finished (sticky) |
+| Asked a question / plan | `PreToolUse` (AskUserQuestion, ExitPlanMode) | 🟡 needs you |
+| Permission prompt | `PermissionRequest` | 🟡 needs permission (fires even when focused) |
+| You sent a message | `UserPromptSubmit` | 🟢 working (also clears a stale 🔵/🟡) |
+| Streaming a response | `MessageDisplay` | 🟢 working (keeps it green through long thinking) |
+| Running a tool | `PreToolUse` (Edit/Write/Bash/…) | 🟢 working |
+
+### How the mute toggle works
+
+The menu app and `notify.sh` are separate processes, so the toggle talks through
+a flag file. Clicking **Mute sounds** creates `~/.claude/menubar/sound.off`;
+`notify.sh` checks for that file and skips `afplay` when it exists (banners still
+show). Clicking **Unmute** deletes the file. That's the whole mechanism, one
+flag, both sides agree.
+
+### Honest limitations
+
+- **🟢 vs ⚪️ is time-based, not a live process check.** A session shows working
+  while events keep firing (including streaming), and ages to idle when they
+  stop. It's "when did this last do something," not a CPU meter.
+- **Only Claude Code sessions appear.** The claude.ai Chat app and Cowork run in
+  the cloud / an isolated VM and leave no local hooks or files, so there's nothing
+  to show. Agent Teams teammates *are* detectable (they write transcripts and fire
+  team hooks) and could be added later.
+
 ## Gotchas (the stuff that wasted our time)
 
 These are the findings that actually mattered, verified on macOS 26 (Tahoe), after a lot of

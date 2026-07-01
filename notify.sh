@@ -108,7 +108,9 @@ MESSAGE="$NAME"
 
 # Sound: play directly via afplay. terminal-notifier's -sound is ignored on recent
 # macOS, so this is the reliable path. Backgrounded so it never blocks Claude.
-if [ -f "$SOUND_DIR/$SOUND.aiff" ]; then
+# Skip it when the menu bar app's "Mute sounds" flag is present (banners still show).
+MUTE_FLAG="${CLAUDE_MENUBAR_DIR:-$HOME/.claude/menubar}/sound.off"
+if [ ! -f "$MUTE_FLAG" ] && [ -f "$SOUND_DIR/$SOUND.aiff" ]; then
   afplay "$SOUND_DIR/$SOUND.aiff" >/dev/null 2>&1 &
 fi
 
