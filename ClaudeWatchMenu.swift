@@ -25,6 +25,17 @@ struct SessionState: Decodable {
     let status: String
     let label: String
     let ts: Double
+    // A name you typed yourself. Deliberately NOT `name`: menubar.sh rewrites
+    // that from the conversation title on every low-frequency event, so a
+    // rename stored there would be gone within seconds. Optional, so the many
+    // state files that predate renaming still decode.
+    let customName: String?
+
+    /// What to show on a row: your name, else the conversation title, else the folder.
+    var displayName: String {
+        if let custom = customName, !custom.isEmpty { return custom }
+        return name.isEmpty ? project : name
+    }
 }
 
 // A session decorated with what the menu should actually show.
@@ -137,7 +148,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 item.view = SessionRowView(row: row, index: index, target: self,
                                            open: #selector(openSession(_:)),
                                            review: #selector(markReviewed(_:)),
-                                           remove: #selector(removeSession(_:)))
+                                           remove: #selector(removeSession(_:)),
+                                           rename: #selector(renameSession(_:)))
                 menu.addItem(item)
             }
         }
@@ -218,6 +230,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refresh()
     }
 
+    // "Rename": give a session a short name of your own.
+    //
+    // Written to `customName`, never `name` -- menubar.sh rewrites `name` from
+    // the conversation title on every low-frequency event, so a rename stored
+    // there would survive only seconds. Clearing the field removes the key and
+    // the generated title takes over again.
+    //
+    // The Flexbar plugin reads the same file and shows the same string, so this
+    // is also how you make a session readable over there: generated titles run
+    // 26-42 characters and shrink to fit a 60px strip, while a short name stays
+    // at full size.
+    @objc private func renameSession(_ sender: Any) {
+        guard let t = tag(of: sender), currentRows.indices.contains(t) else { return }
+        let state = currentRows[t].state
+        dismissMenu()
+
+        let alert = NSAlert()
+        alert.messageText = "Rename session"
+        alert.informativeText = "Shown in the menu bar and on the Flexbar.\nLeave empty to go back to \"\(state.name)\"."
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = state.customName ?? ""
+        field.placeholderString = state.name
+        alert.accessoryView = field
+
+        // This is an .accessory app, so it holds no keyboard focus until asked.
+        // Without this the dialog appears but typing goes to whatever was in
+        // front, which reads as the text field being broken.
+        NSApp.activate(ignoringOtherApps: true)
+        alert.window.initialFirstResponder = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let entered = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let path = "\(stateDir)/\(state.session).json"
+        guard let data = FileManager.default.contents(atPath: path),
+              var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        if entered.isEmpty {
+            obj.removeValue(forKey: "customName")
+        } else {
+            obj["customName"] = entered
+        }
+        // Temp-then-rename, matching menubar.sh: a reader mid-scan sees the old
+        // file or the new one, never half of either.
+        let tmp = "\(stateDir)/.\(state.session).rename.tmp"
+        if let out = try? JSONSerialization.data(withJSONObject: obj),
+           (try? out.write(to: URL(fileURLWithPath: tmp))) != nil {
+            try? FileManager.default.removeItem(atPath: path)
+            try? FileManager.default.moveItem(atPath: tmp, toPath: path)
+        }
+        refresh()
+    }
+
     // "Remove": take an idle session off the list now by deleting its state file.
     // If that session fires another event later, menubar.sh recreates it.
     @objc private func removeSession(_ sender: Any) {
@@ -245,7 +312,8 @@ final class SessionRowView: NSView {
     // NSView.tag is read-only; expose our row index through it so tag(of:) works.
     override var tag: Int { index }
 
-    init(row: Row, index: Int, target: AnyObject, open: Selector, review: Selector, remove: Selector) {
+    init(row: Row, index: Int, target: AnyObject, open: Selector, review: Selector,
+         remove: Selector, rename: Selector) {
         self.index = index
         self.target = target
         self.openSel = open
@@ -274,12 +342,17 @@ final class SessionRowView: NSView {
         // "Flexbar Apple Music plugin" does. menubar.sh only produces a name
         // worth showing once Claude Code has generated a title, so fall back to
         // the folder until then.
-        let title = row.state.name.isEmpty ? row.state.project : row.state.name
-        let project = label(title, font: .menuFont(ofSize: 13), color: .labelColor)
+        let project = label(row.state.displayName, font: .menuFont(ofSize: 13), color: .labelColor)
         let age = label(shortAge(row.age), font: .menuFont(ofSize: 11), color: .tertiaryLabelColor)
         [project, age].forEach { addSubview($0) }
 
-        // --- trailing action (only where it makes sense) ----------------------
+        // --- trailing actions -------------------------------------------------
+        // Rename is on every row: generated titles run long and a short name of
+        // your own is the only thing that stays readable on the Flexbar, which
+        // renders the same string in a 60px strip.
+        let renameButton = actionButton(symbol: "pencil", tip: "Rename", sel: rename)
+        addSubview(renameButton)
+
         var action: NSButton?
         if row.effectiveStatus == "review" {
             action = actionButton(symbol: "checkmark.circle.fill", tip: "Mark reviewed", sel: review)
@@ -307,16 +380,24 @@ final class SessionRowView: NSView {
         // project truncates before it pushes the age off the right edge
         project.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        // Rename always sits at the right edge; the status action, when there is
+        // one, tucks in beside it so the row keeps a single stable layout.
+        NSLayoutConstraint.activate([
+            renameButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            renameButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            renameButton.widthAnchor.constraint(equalToConstant: 16),
+            renameButton.heightAnchor.constraint(equalToConstant: 16),
+        ])
         if let action {
             NSLayoutConstraint.activate([
-                action.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+                action.trailingAnchor.constraint(equalTo: renameButton.leadingAnchor, constant: -8),
                 action.centerYAnchor.constraint(equalTo: centerYAnchor),
                 action.widthAnchor.constraint(equalToConstant: 16),
                 action.heightAnchor.constraint(equalToConstant: 16),
                 age.trailingAnchor.constraint(equalTo: action.leadingAnchor, constant: -10),
             ])
         } else {
-            age.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14).isActive = true
+            age.trailingAnchor.constraint(equalTo: renameButton.leadingAnchor, constant: -10).isActive = true
         }
         // project must stay clear of the age
         project.trailingAnchor.constraint(lessThanOrEqualTo: age.leadingAnchor, constant: -8).isActive = true
