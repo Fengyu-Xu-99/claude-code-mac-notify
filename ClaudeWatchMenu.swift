@@ -268,8 +268,14 @@ final class SessionRowView: NSView {
         dot.translatesAutoresizingMaskIntoConstraints = false
         addSubview(dot)
 
-        // --- project (the only text on the row) + age (muted, right) ----------
-        let project = label(row.state.project, font: .menuFont(ofSize: 13), color: .labelColor)
+        // --- title (the only text on the row) + age (muted, right) ------------
+        // Prefer the conversation's own name over the folder: with several
+        // sessions in one project, "code" three times tells you nothing, while
+        // "Flexbar Apple Music plugin" does. menubar.sh only produces a name
+        // worth showing once Claude Code has generated a title, so fall back to
+        // the folder until then.
+        let title = row.state.name.isEmpty ? row.state.project : row.state.name
+        let project = label(title, font: .menuFont(ofSize: 13), color: .labelColor)
         let age = label(shortAge(row.age), font: .menuFont(ofSize: 11), color: .tertiaryLabelColor)
         [project, age].forEach { addSubview($0) }
 
@@ -282,8 +288,9 @@ final class SessionRowView: NSView {
         }
         if let action { addSubview(action) }
 
-        // tooltip carries the full session name + cwd (kept off the row itself)
-        self.toolTip = "\(row.state.name)\n\(row.state.cwd)\nlast event \(shortAge(row.age)) ago"
+        // tooltip carries the project and full path, now that the row shows the
+        // conversation title instead
+        self.toolTip = "\(row.state.project)\n\(row.state.cwd)\nlast event \(shortAge(row.age)) ago"
 
         // --- layout: flexbox-like via constraints -----------------------------
         NSLayoutConstraint.activate([

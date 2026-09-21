@@ -75,7 +75,7 @@ def install(event, arg, matcher=None):
 install("Stop", "done")                # finished -> sticky "needs review" (blue)
 install("Notification", "notify")
 install("PreToolUse", "waiting", "AskUserQuestion|ExitPlanMode")
-install("PreToolUse", "working", "Edit|Write|MultiEdit|NotebookEdit|Bash")
+install("PreToolUse", "tool", "Edit|Write|MultiEdit|NotebookEdit|Bash")
 # Permission dialog (e.g. "Allow this bash command?") -> yellow, even when the
 # session is focused. This is the one signal the Notification event couldn't give.
 install("PermissionRequest", "permission")
